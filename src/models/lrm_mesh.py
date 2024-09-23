@@ -291,7 +291,6 @@ class InstantMesh(nn.Module):
                 [tex_hard_mask[i * run_n_view + i_view: i * run_n_view + i_view + 1]
                  for i_view in range(run_n_view)], dim=2)
                 for i in range(planes.shape[0])], dim=0)
-
         # Querying the texture field to predict the texture feature for each pixel on the image
         tex_feat = self.get_texture_prediction(planes, tex_pos, tex_hard_mask)
         background_feature = torch.ones_like(tex_feat)      # white background

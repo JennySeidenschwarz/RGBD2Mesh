@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
+import math 
 
 
 def pad_camera_extrinsics_4x4(extrinsics):
@@ -109,3 +110,47 @@ def get_zero123plus_input_cameras(batch_size=1, radius=4.0, fov=30.0):
     cameras = torch.cat([extrinsics, intrinsics], dim=-1)
 
     return cameras.unsqueeze(0).repeat(batch_size, 1, 1)
+
+
+def get_T(target_RT, cond_RT):
+    """
+    Get relative camera position in azimuth, elevation, and distance
+    Args: 
+        4x4 world2cam matrices 
+        # https://github.com/cvlab-columbia/zero123/blob/main/objaverse-rendering/scripts/blender_script.py#L218
+    """
+    R, T = target_RT[:3, :3], target_RT[:3, -1]
+    T_target = -R.T @ T
+
+    R, T = cond_RT[:3, :3], cond_RT[:3, -1]
+    T_cond = -R.T @ T
+
+    theta_cond, azimuth_cond, z_cond = cartesian_to_spherical(T_cond[None, :])
+    theta_target, azimuth_target, z_target = cartesian_to_spherical(T_target[None, :])
+    
+    d_theta = theta_target - theta_cond
+    d_azimuth = (azimuth_target - azimuth_cond) % (2 * math.pi)
+    d_z = z_target - z_cond
+    
+    d_T = torch.tensor([d_theta.item(), math.sin(d_azimuth.item()), math.cos(d_azimuth.item()), d_z.item()])
+    return d_T
+
+
+def get_rel_trafo(target_c2w, cond_c2w):
+    """
+    Get relative camera position in azimuth, elevation, and distance
+    Args: 
+        4x4 world2cam matrices 
+        # https://github.com/cvlab-columbia/zero123/blob/main/objaverse-rendering/scripts/blender_script.py#L218
+    """
+    return torch.linalg.inv(target_c2w)@cond_c2w
+
+
+def cartesian_to_spherical(xyz):
+    ptsnew = np.hstack((xyz, np.zeros(xyz.shape)))
+    xy = xyz[:,0]**2 + xyz[:,1]**2
+    z = np.sqrt(xy + xyz[:,2]**2)
+    theta = np.arctan2(np.sqrt(xy), xyz[:,2]) # for elevation angle defined from Z-axis down
+    #ptsnew[:,4] = np.arctan2(xyz[:,2], np.sqrt(xy)) # for elevation angle defined from XY-plane up
+    azimuth = np.arctan2(xyz[:,1], xyz[:,0])
+    return np.array([theta, azimuth, z])

@@ -20,6 +20,7 @@ from src.utils.camera_util import (
 )
 from src.utils.mesh_util import save_obj, save_obj_with_mtl
 from src.utils.infer_util import remove_background, resize_foreground, save_video
+import shutil
 
 
 def get_render_cameras(batch_size=1, M=120, radius=4.0, elevation=20.0, is_flexicubes=False):
@@ -135,9 +136,11 @@ model = model.eval()
 # make output directories
 image_path = os.path.join(args.output_path, config_name, 'images')
 mesh_path = os.path.join(args.output_path, config_name, 'meshes')
+orig_path = os.path.join(args.output_path, config_name, 'orig')
 video_path = os.path.join(args.output_path, config_name, 'videos')
 os.makedirs(image_path, exist_ok=True)
 os.makedirs(mesh_path, exist_ok=True)
+os.makedirs(orig_path, exist_ok=True)
 os.makedirs(video_path, exist_ok=True)
 
 # process input files
@@ -161,14 +164,17 @@ rembg_session = None if args.no_rembg else rembg.new_session()
 outputs = []
 for idx, image_file in enumerate(input_files):
     name = os.path.basename(image_file).split('.')[0]
+    if name == '000':
+        name = os.path.basename(os.path.dirname(image_file))
     print(f'[{idx+1}/{len(input_files)}] Imagining {name} ...')
 
     # remove background optionally
+    shutil.copyfile(image_file, os.path.join(orig_path, f'{name}.png'))
     input_image = Image.open(image_file)
     if not args.no_rembg:
         input_image = remove_background(input_image, rembg_session)
         input_image = resize_foreground(input_image, 0.85)
-    
+
     # sampling
     output_image = pipeline(
         input_image, 

@@ -24,6 +24,7 @@ from src.utils.camera_util import (
     center_looking_at_camera_pose, 
     get_circular_camera_poses,
 )
+import imageio
 
 
 class DataModuleFromConfig(pl.LightningDataModule):
@@ -59,16 +60,16 @@ class DataModuleFromConfig(pl.LightningDataModule):
     def train_dataloader(self):
 
         sampler = DistributedSampler(self.datasets['train'])
-        return wds.WebLoader(self.datasets['train'], batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False, sampler=sampler)
+        return DataLoader(self.datasets['train'], batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False, sampler=sampler)
 
     def val_dataloader(self):
 
         sampler = DistributedSampler(self.datasets['validation'])
-        return wds.WebLoader(self.datasets['validation'], batch_size=1, num_workers=self.num_workers, shuffle=False, sampler=sampler)
+        return DataLoader(self.datasets['validation'], batch_size=1, num_workers=self.num_workers, shuffle=False, sampler=sampler)
 
     def test_dataloader(self):
 
-        return wds.WebLoader(self.datasets['test'], batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False)
+        return DataLoader(self.datasets['test'], batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False)
 
 
 class ObjaverseData(Dataset):
@@ -94,10 +95,7 @@ class ObjaverseData(Dataset):
         self.fov = fov
         self.camera_rotation = camera_rotation
 
-        with open(os.path.join(root_dir, meta_fname)) as f:
-            filtered_dict = json.load(f)
-        paths = filtered_dict['good_objs']
-        self.paths = paths
+        self.paths = glob.glob(f"{os.path.join(self.root_dir, self.input_image_dir)}/*/*")
         
         self.depth_scale = 6.0
             
@@ -111,11 +109,19 @@ class ObjaverseData(Dataset):
         '''
         replace background pixel with random color in rendering
         '''
-        pil_img = Image.open(path)
+        if path[-3:] == 'exr':
+            img = imageio.imread(path, format='EXR-FI')
+            pil_img = Image.fromarray(img)
+        else:
+            pil_img = Image.open(path)
+        pil_img = pil_img.resize((self.input_image_size, self.input_image_size), resample=Image.BICUBIC)
 
         image = np.asarray(pil_img, dtype=np.float32) / 255.
-        alpha = image[:, :, 3:]
-        image = image[:, :, :3] * alpha + color * (1 - alpha)
+        if image.shape[-1] == 4:
+            alpha = image[:, :, 3:]
+            image = image[:, :, :3] * alpha + color * (1 - alpha)
+        else:
+            alpha = np.ones_like(image[:, :, :1])
 
         image = torch.from_numpy(image).permute(2, 0, 1).contiguous().float()
         alpha = torch.from_numpy(alpha).permute(2, 0, 1).contiguous().float()
@@ -123,8 +129,8 @@ class ObjaverseData(Dataset):
     
     def __getitem__(self, index):
         while True:
-            input_image_path = os.path.join(self.root_dir, self.input_image_dir, self.paths[index])
-            target_image_path = os.path.join(self.root_dir, self.target_image_dir, self.paths[index])
+            input_image_path = self.paths[index]
+            target_image_path = self.paths[index]
 
             indices = np.random.choice(range(self.total_view_n), self.input_view_num + self.target_view_num, replace=False)
             input_indices = indices[:self.input_view_num]
@@ -139,37 +145,38 @@ class ObjaverseData(Dataset):
             depth_list = []
             normal_list = []
             pose_list = []
+            intrinsics_list = []
 
             try:
-                input_cameras = np.load(os.path.join(input_image_path, 'cameras.npz'))['cam_poses']
                 for idx in input_indices:
                     image, alpha = self.load_im(os.path.join(input_image_path, '%03d.png' % idx), bg_white)
-                    normal, _ = self.load_im(os.path.join(input_image_path, '%03d_normal.png' % idx), bg_black)
-                    depth = cv2.imread(os.path.join(input_image_path, '%03d_depth.png' % idx), cv2.IMREAD_UNCHANGED) / 255.0 * self.depth_scale
+                    normal, _ = self.load_im(os.path.join(input_image_path, 'normal_%03d.exr' % idx), bg_black)
+                    depth = imageio.imread(os.path.join(input_image_path, 'depth_%03d.exr' % idx), format='EXR-FI')
                     depth = torch.from_numpy(depth).unsqueeze(0)
-                    pose = input_cameras[idx]
-                    pose = np.concatenate([pose, np.array([[0, 0, 0, 1]])], axis=0)
+                    pose = np.load(os.path.join(input_image_path, 'extrinsics_%03d.npy' % idx))
+                    intrinsics = np.load(os.path.join(input_image_path, 'intrinsics_%03d.npy' % idx))
 
                     image_list.append(image)
                     alpha_list.append(alpha)
                     depth_list.append(depth)
                     normal_list.append(normal)
                     pose_list.append(pose)
+                    intrinsics_list.append(intrinsics)
 
-                target_cameras = np.load(os.path.join(target_image_path, 'cameras.npz'))['cam_poses']
                 for idx in target_indices:
-                    image, alpha = self.load_im(os.path.join(target_image_path, '%03d.png' % idx), bg_white)
-                    normal, _ = self.load_im(os.path.join(target_image_path, '%03d_normal.png' % idx), bg_black)
-                    depth = cv2.imread(os.path.join(target_image_path, '%03d_depth.png' % idx), cv2.IMREAD_UNCHANGED) / 255.0 * self.depth_scale
+                    image, alpha = self.load_im(os.path.join(input_image_path, '%03d.png' % idx), bg_white)
+                    normal, _ = self.load_im(os.path.join(input_image_path, 'normal_%03d.exr' % idx), bg_black)
+                    depth = imageio.imread(os.path.join(input_image_path, 'depth_%03d.exr' % idx), format='EXR-FI')
                     depth = torch.from_numpy(depth).unsqueeze(0)
-                    pose = target_cameras[idx]
-                    pose = np.concatenate([pose, np.array([[0, 0, 0, 1]])], axis=0)
+                    pose = np.load(os.path.join(input_image_path, 'extrinsics_%03d.npy' % idx))
+                    intrinsics = np.load(os.path.join(input_image_path, 'intrinsics_%03d.npy' % idx))
 
                     image_list.append(image)
                     alpha_list.append(alpha)
                     depth_list.append(depth)
                     normal_list.append(normal)
                     pose_list.append(pose)
+                    intrinsics_list.append(intrinsics)
 
             except Exception as e:
                 print(e)
@@ -184,6 +191,7 @@ class ObjaverseData(Dataset):
         normals = torch.stack(normal_list, dim=0).float()               # (6+V, 3, H, W)
         w2cs = torch.from_numpy(np.stack(pose_list, axis=0)).float()    # (6+V, 4, 4)
         c2ws = torch.linalg.inv(w2cs).float()
+        intrinsics = torch.from_numpy(np.stack(intrinsics, axis=0)).float()    # (6+V, 4, 4)
 
         normals = normals * 2.0 - 1.0
         normals = F.normalize(normals, dim=1)
@@ -281,7 +289,11 @@ class ValidationData(Dataset):
         '''
         replace background pixel with random color in rendering
         '''
-        pil_img = Image.open(path)
+        if path[-3:] == 'exr':
+            img = imageio.imread(path, format='EXR-FI')
+            pil_img = Image.fromarray(img)
+        else:
+            pil_img = Image.open(path)
         pil_img = pil_img.resize((self.input_image_size, self.input_image_size), resample=Image.BICUBIC)
 
         image = np.asarray(pil_img, dtype=np.float32) / 255.
@@ -304,6 +316,7 @@ class ValidationData(Dataset):
 
         image_list = []
         alpha_list = []
+        depth_list = []
 
         for idx in range(self.input_view_num):
             image, alpha = self.load_im(os.path.join(input_image_path, f'{idx:03d}.png'), bkg_color)

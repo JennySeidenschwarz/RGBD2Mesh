@@ -89,8 +89,7 @@ class NeuralRender(Renderer):
         
         mtx_in = torch.tensor(camera_mv_bx4x4, dtype=torch.float32, device=device) if not torch.is_tensor(camera_mv_bx4x4) else camera_mv_bx4x4
         v_pos = xfm_points(mesh_v_pos_bxnx3, mtx_in)  # Rotate it to camera coordinates
-        v_pos_clip = self.camera.project(v_pos)  # Projection in the camera
-
+        v_pos_clip = self.camera.project(v_pos)  # Projection in the camera 
         v_nrm = compute_vertex_normal(mesh_v_pos_bxnx3[0], mesh_t_pos_idx_fx3.long())  # vertex normals in world coordinates
 
         # Render the image,
@@ -104,7 +103,6 @@ class NeuralRender(Renderer):
             for _ in range(num_layers):
                 rast, db = peeler.rasterize_next_layer()
                 gb_feat, _ = interpolate(mesh_v_feat_bxnxd, rast, mesh_t_pos_idx_fx3)
-
         hard_mask = torch.clamp(rast[..., -1:], 0, 1)
         antialias_mask = dr.antialias(
             hard_mask.clone().contiguous(), rast, v_pos_clip,
@@ -117,5 +115,5 @@ class NeuralRender(Renderer):
         normal = dr.antialias(normal.clone().contiguous(), rast, v_pos_clip, mesh_t_pos_idx_fx3)
         normal = F.normalize(normal, dim=-1)
         normal = torch.lerp(torch.zeros_like(normal), (normal + 1.0) / 2.0, hard_mask.float())      # black background
-
+        
         return ori_mesh_feature, antialias_mask, hard_mask, rast, v_pos_clip, mask_pyramid, depth, normal

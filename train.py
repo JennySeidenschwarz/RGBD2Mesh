@@ -82,6 +82,12 @@ def get_parser(**parser_kwargs):
         default="logs",
         help="directory for logging data",
     )
+    parser.add_argument(
+        "-e",
+        "--eval",
+        action="store_true",
+        help="if just eval",
+    )
     return parser
 
 
@@ -180,21 +186,29 @@ if __name__ == "__main__":
 
     # model
     model = instantiate_from_config(config.model)
-    if opt.resume and opt.resume_weights_only:
+    if (opt.resume or opt.eval) and opt.resume_weights_only and not 'compose' in cfg_fname:
         model = model.__class__.load_from_checkpoint(opt.resume, **config.model.params)
-    
+    elif (opt.resume and opt.resume_weights_only) or opt.eval:
+        model.load_checkpoints_composition()
     model.logdir = logdir
 
     # trainer and callbacks
     trainer_kwargs = dict()
 
     # logger
+    # default_logger_cfg = {
+    #     "target": "pytorch_lightning.loggers.TensorBoardLogger",
+    #     "params": {
+    #         "name": "tensorboard",
+    #         "save_dir": logdir, 
+    #         "version": "0",
+    #     }
+    #  }
     default_logger_cfg = {
-        "target": "pytorch_lightning.loggers.TensorBoardLogger",
+        "target": "pytorch_lightning.loggers.WandbLogger",
         "params": {
-            "name": "tensorboard",
-            "save_dir": logdir, 
-            "version": "0",
+            "name": "mesh_completion",
+            "project": "mesh_completion",
         }
     }
     logger_cfg = OmegaConf.merge(default_logger_cfg)
@@ -280,7 +294,10 @@ if __name__ == "__main__":
     rank_zero_print(f"Setting learning rate to {model.learning_rate:.2e}")
 
     # run training loop
-    if opt.resume and not opt.resume_weights_only:
+    if opt.eval:
+        print(data)
+        trainer.validate(model=model, dataloaders=data)
+    elif opt.resume and not opt.resume_weights_only:
         trainer.fit(model, data, ckpt_path=opt.resume)
     else:
         trainer.fit(model, data)

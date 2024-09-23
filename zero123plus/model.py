@@ -12,6 +12,9 @@ from einops import rearrange
 from src.utils.train_util import instantiate_from_config
 from diffusers import DiffusionPipeline, EulerAncestralDiscreteScheduler, DDPMScheduler, UNet2DConditionModel
 from .pipeline import RefOnlyNoisedUNet
+from src.evaluator.evaluator import Evaluator
+import wandb
+import imageio
 
 
 def scale_latents(latents):
@@ -69,6 +72,8 @@ class MVDiffusion(pl.LightningModule):
 
         # validation output buffer
         self.validation_step_outputs = []
+
+        self.evaluator = Evaluator(do_evaluate_mesh=False, do_evaluate_nvs=True)
 
     def register_schedule(self):
         self.num_timesteps = 1000
@@ -240,18 +245,31 @@ class MVDiffusion(pl.LightningModule):
         images_pil = [v2.functional.to_pil_image(cond_imgs[i]) for i in range(cond_imgs.shape[0])]
 
         outputs = []
+        pred_mesh = []
         for cond_img in images_pil:
             latent = self.pipeline(cond_img, num_inference_steps=75, output_type='latent').images
             image = unscale_image(self.pipeline.vae.decode(latent / self.pipeline.vae.config.scaling_factor, return_dict=False)[0])   # [-1, 1]
             image = (image * 0.5 + 0.5).clamp(0, 1)
+            # imageio.imwrite('test.png', (255*image.squeeze().clone().detach().cpu().permute(1, 2, 0).numpy()).astype(np.uint8))
+            # print(image.shape)
+            # quit()
             outputs.append(image)
         outputs = torch.cat(outputs, dim=0).to(self.device)
         images = torch.cat([target_imgs, outputs], dim=-2)
         
         self.validation_step_outputs.append(images)
+        self.evaluator.evaluate(
+            {'raw_imgs': outputs},
+            {'raw_imgs': target_imgs})
+        if len(pred_mesh):
+            pred_mesh.export('sample.obj')
+            self.log("generated_samples", [wandb.Object3D(open("sample.obj"))], on_step=True)
+
     
     @torch.no_grad()
     def on_validation_epoch_end(self):
+        metrics = self.evaluator.get_metrics()
+        self.log_dict(metrics, prog_bar=True, logger=True, on_step=False, on_epoch=True)
         images = torch.cat(self.validation_step_outputs, dim=0)
 
         all_images = self.all_gather(images)
